@@ -242,7 +242,7 @@ button { border: 0; cursor: pointer; }
 .through-card.enabled { opacity: 1; border-color: #cfd5f4; background: #fcfcff; }
 .through-title { min-height: 28px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .through-title b { font-size: 12px; }
-.through-title > span { color: var(--muted); font-size: 9px; }
+.through-title > div span { display: block; margin-top: 2px; color: var(--muted); font-size: 9px; }
 .through-fields { gap: 9px; }
 .through-fields .field input, .through-fields .field select { height: 40px; font-size: 11px; }
 .through-fields input:disabled, .through-fields select:disabled { opacity: .5; }

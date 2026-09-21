@@ -2,7 +2,7 @@
   'use strict';
 
   const STORAGE_KEY = 'kakuu-railway-dia-lab-v1';
-  const APP_VERSION = 3;
+  const APP_VERSION = 4;
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
@@ -32,8 +32,8 @@
   ];
 
   const emptyThrough = () => ({
-    enabled: false, targetLineId: '', targetDirection: 'up', every: 4,
-    layover: 3, targetServiceId: '', destination: ''
+    enabled: false, lineName: '', directionLabel: '', every: 4,
+    layover: 3, serviceName: '', destination: ''
   });
 
   const emptyBranch = (route, target) => ({
@@ -108,8 +108,8 @@
     const main = makeDemoLine();
     const partner = makePartnerLine();
     main.through.up = {
-      enabled: true, targetLineId: partner.id, targetDirection: 'up', every: 4,
-      layover: 3, targetServiceId: partner.services[0].id, destination: '潮見'
+      enabled: true, lineName: '海浜線', directionLabel: '潮見方面', every: 4,
+      layover: 3, serviceName: '普通', destination: '潮見'
     };
     return { version: APP_VERSION, selectedId: main.id, lines: [main, partner] };
   };
@@ -171,12 +171,15 @@
   function sanitizeThrough(raw) {
     return {
       enabled: Boolean(raw && raw.enabled),
-      targetLineId: typeof (raw && raw.targetLineId) === 'string' ? raw.targetLineId : '',
-      targetDirection: raw && raw.targetDirection === 'down' ? 'down' : 'up',
+      lineName: String((raw && raw.lineName) || '').slice(0, 40),
+      directionLabel: String((raw && raw.directionLabel) || '').slice(0, 40),
       every: Math.round(numberOf(raw && raw.every, 4, 1, 20)),
       layover: Math.round(numberOf(raw && raw.layover, 3, 0, 60)),
-      targetServiceId: typeof (raw && raw.targetServiceId) === 'string' ? raw.targetServiceId : '',
-      destination: String((raw && raw.destination) || '').slice(0, 40)
+      serviceName: String((raw && raw.serviceName) || '').slice(0, 20),
+      destination: String((raw && raw.destination) || '').slice(0, 40),
+      legacyTargetLineId: typeof (raw && raw.targetLineId) === 'string' ? raw.targetLineId : '',
+      legacyTargetDirection: raw && raw.targetDirection === 'down' ? 'down' : 'up',
+      legacyTargetServiceId: typeof (raw && raw.targetServiceId) === 'string' ? raw.targetServiceId : ''
     };
   }
 
@@ -253,11 +256,20 @@
       });
       ['up', 'down'].forEach((dir) => {
         const through = route.through[dir];
-        const target = lines.find((item) => item.id === through.targetLineId);
-        if (!target || target.id === route.id) {
-          through.enabled = false; through.targetLineId = ''; through.targetServiceId = ''; return;
+        const target = lines.find((item) => item.id === through.legacyTargetLineId && item.id !== route.id);
+        if (target) {
+          if (!through.lineName) through.lineName = target.name;
+          if (!through.directionLabel) through.directionLabel = through.legacyTargetDirection === 'down' ? target.downLabel : target.upLabel;
+          if (!through.serviceName) {
+            const targetService = target.services.find((service) => service.id === through.legacyTargetServiceId) || target.services[0];
+            through.serviceName = targetService.name;
+          }
+          if (!through.destination) {
+            const targetSequence = routeSequence(target, through.legacyTargetDirection);
+            through.destination = targetSequence[targetSequence.length - 1].name;
+          }
         }
-        if (!target.services.some((service) => service.id === through.targetServiceId)) through.targetServiceId = target.services[0].id;
+        delete through.legacyTargetLineId; delete through.legacyTargetDirection; delete through.legacyTargetServiceId;
       });
     });
     return { version: APP_VERSION, selectedId: lineIds.has(candidate.selectedId) ? candidate.selectedId : lines[0].id, lines };
@@ -332,16 +344,10 @@
     }
     return route.services.slice(1).find((service) => service.every >= 2 && trainNumber % service.every === 0) || route.services[0];
   }
-  function throughContext(route, dir, contextState) {
+  function throughContext(route, dir) {
     const config = route.through[dir];
     if (!config || !config.enabled) return null;
-    const target = contextState.lines.find((item) => item.id === config.targetLineId && item.id !== route.id);
-    if (!target) return null;
-    const targetService = target.services.find((service) => service.id === config.targetServiceId) || target.services[0];
-    const sequence = routeSequence(target, config.targetDirection).map((station) => ({
-      ...station, connectionType: 'through', connectionName: target.name
-    }));
-    return { config, target, targetService, sequence };
+    return { config };
   }
   function branchContext(route, branch, dir, contextState, baseSequence = routeSequence(route, dir)) {
     if (!branch || !branch.enabled) return null;
@@ -371,7 +377,7 @@
     const baseSequence = routeSequence(route, dir);
     const branches = branchContexts(route, dir, contextState, baseSequence);
     const direct = throughContext(route, dir, contextState);
-    const displaySequence = baseSequence.concat(...branches.map((branch) => branch.sequence), direct ? direct.sequence : []);
+    const displaySequence = baseSequence.concat(...branches.map((branch) => branch.sequence));
     const trips = [];
     for (let departure = first, tripIndex = 0; departure <= last && tripIndex < 400; departure += headway, tripIndex += 1) {
       const trainNumber = tripIndex + 1;
@@ -403,14 +409,16 @@
         times[stationTimeKey(baseSequence[0])] = clock;
         clock = runSegment(route, baseSequence, service, clock, times);
         if (isThrough) {
-          clock += direct.config.layover; times[stationTimeKey(direct.sequence[0])] = clock;
-          clock = runSegment(direct.target, direct.sequence, direct.targetService, clock, times);
-          destination = direct.config.destination || direct.sequence[direct.sequence.length - 1].name;
+          clock += direct.config.layover;
+          destination = direct.config.destination || destination;
         }
       }
       if (override.destination) destination = override.destination;
       trips.push({ id: trainId, serviceId: service.id, kind: service.name, short: service.short,
         serviceColor: service.color, departure, arrival: clock, destination, through: isThrough,
+        throughLineName: isThrough ? direct.config.lineName : '',
+        throughDirectionLabel: isThrough ? direct.config.directionLabel : '',
+        throughServiceName: isThrough ? direct.config.serviceName : '',
         branchId: branch ? branch.config.id : '', branchName: branch ? branch.config.name : '', times });
     }
     return { sequence: displaySequence, baseSequence, trips };
@@ -465,11 +473,8 @@
     const sequence = routeSequence(route, dir); return `${sequence[0].name} → ${sequence[sequence.length - 1].name}`;
   }
   function throughEditor(route, dir) {
-    const config = route.through[dir]; const others = state.lines.filter((item) => item.id !== route.id);
-    const target = others.find((item) => item.id === config.targetLineId) || others[0]; const targetServices = target ? target.services : [];
-    const autoDestination = target ? routeSequence(target, config.targetDirection).slice(-1)[0].name : '';
-    if (!others.length) return `<div class="through-card"><div class="through-title"><b>${dir === 'up' ? '上り' : '下り'}直通</b><span>未設定</span></div><p class="mini-note">直通先にする2つ目の路線を「路線」画面で作成してください。</p></div>`;
-    return `<div class="through-card ${config.enabled ? 'enabled' : ''}"><div class="through-title"><b>${dir === 'up' ? '上り' : '下り'}直通</b><label class="switch"><input type="checkbox" data-through-dir="${dir}" data-through-field="enabled" ${config.enabled ? 'checked' : ''}><i></i></label></div><div class="form-grid through-fields"><label class="field full"><span>直通先路線</span><select data-through-dir="${dir}" data-through-field="targetLineId" ${config.enabled ? '' : 'disabled'}>${others.map((item) => `<option value="${esc(item.id)}" ${item.id === (target && target.id) ? 'selected' : ''}>${esc(item.operator)} ${esc(item.name)}</option>`).join('')}</select></label><label class="field full"><span>直通先の運転方向</span><select data-through-dir="${dir}" data-through-field="targetDirection" ${config.enabled ? '' : 'disabled'}><option value="up" ${config.targetDirection === 'up' ? 'selected' : ''}>${target ? esc(directionOption(target, 'up')) : '起点 → 終点'}</option><option value="down" ${config.targetDirection === 'down' ? 'selected' : ''}>${target ? esc(directionOption(target, 'down')) : '終点 → 起点'}</option></select></label><label class="field suffix-field"><span>直通頻度</span><input type="number" min="1" max="20" data-through-dir="${dir}" data-through-field="every" value="${config.every}" ${config.enabled ? '' : 'disabled'}><em>本毎</em></label><label class="field suffix-field"><span>接続停車</span><input type="number" min="0" max="60" data-through-dir="${dir}" data-through-field="layover" value="${config.layover}" ${config.enabled ? '' : 'disabled'}><em>分</em></label><label class="field full"><span>直通先での種別</span><select data-through-dir="${dir}" data-through-field="targetServiceId" ${config.enabled ? '' : 'disabled'}>${targetServices.map((service) => `<option value="${esc(service.id)}" ${service.id === config.targetServiceId ? 'selected' : ''}>${esc(service.name)}</option>`).join('')}</select></label><label class="field full"><span>直通列車の行先</span><input maxlength="40" data-through-dir="${dir}" data-through-field="destination" value="${esc(config.destination)}" placeholder="${esc(autoDestination)}" ${config.enabled ? '' : 'disabled'}></label></div></div>`;
+    const config = route.through[dir]; const disabled = config.enabled ? '' : 'disabled';
+    return `<div class="through-card ${config.enabled ? 'enabled' : ''}"><div class="through-title"><div><b>${dir === 'up' ? '上り' : '下り'}直通</b><span>路線作成不要・自由入力</span></div><label class="switch"><input type="checkbox" data-through-dir="${dir}" data-through-field="enabled" ${config.enabled ? 'checked' : ''}><i></i></label></div><div class="form-grid through-fields"><label class="field full"><span>直通先路線名</span><input maxlength="40" data-through-dir="${dir}" data-through-field="lineName" value="${esc(config.lineName)}" placeholder="例：海浜線" ${disabled}></label><label class="field full"><span>直通先の方面・方向</span><input maxlength="40" data-through-dir="${dir}" data-through-field="directionLabel" value="${esc(config.directionLabel)}" placeholder="例：潮見方面" ${disabled}></label><label class="field suffix-field"><span>直通頻度</span><input type="number" min="1" max="20" data-through-dir="${dir}" data-through-field="every" value="${config.every}" ${disabled}><em>本毎</em></label><label class="field suffix-field"><span>接続停車</span><input type="number" min="0" max="60" data-through-dir="${dir}" data-through-field="layover" value="${config.layover}" ${disabled}><em>分</em></label><label class="field full"><span>直通先での種別</span><input maxlength="20" data-through-dir="${dir}" data-through-field="serviceName" value="${esc(config.serviceName)}" placeholder="例：普通・快速" ${disabled}></label><label class="field full"><span>直通列車の行先</span><input maxlength="40" data-through-dir="${dir}" data-through-field="destination" value="${esc(config.destination)}" placeholder="例：潮見" ${disabled}></label></div></div>`;
   }
   function branchEditor(route, branch) {
     const others = state.lines.filter((item) => item.id !== route.id);
@@ -490,7 +495,7 @@
       <article class="card"><div class="card-title"><h2>運転時間帯</h2><span>24時をまたぐ設定可</span></div><div class="form-grid"><label class="field"><span>始発</span><input type="time" data-setting="first" value="${esc(settings.first)}"></label><label class="field"><span>終発</span><input type="time" data-setting="last" value="${esc(settings.last)}"></label><label class="field suffix-field"><span>運転間隔</span><input type="number" min="2" max="180" data-setting="headway" value="${settings.headway}"><em>分</em></label><label class="field suffix-field"><span>表定速度</span><input type="number" min="10" max="160" data-setting="speed" value="${settings.speed}"><em>km/h</em></label></div></article>
       <article class="card service-editor-card"><div class="card-title"><div><h2>列車種別</h2><span>0本毎は列車別設定専用</span></div><button class="secondary small" data-action="add-service">＋ 種別追加</button></div><div class="service-list">${serviceEditors(route)}</div></article>
       <article class="card branch-editor-card"><div class="card-title"><div><h2>支線運転</h2><span>設定順が同一列車では優先</span></div><button class="secondary small" data-action="add-branch" ${state.lines.length < 2 ? 'disabled' : ''}>＋ 支線追加</button></div><div class="branch-list">${branchEditors(route)}</div></article>
-      <article class="card"><div class="card-title"><h2>他路線への直通運転</h2><span>片方向ずつ設定</span></div><div class="through-grid">${throughEditor(route, 'up')}${throughEditor(route, 'down')}</div></article>
+      <article class="card"><div class="card-title"><h2>他路線への直通運転</h2><span>路線名・行先を自由入力</span></div><div class="through-grid">${throughEditor(route, 'up')}${throughEditor(route, 'down')}</div></article>
       <div class="stats-grid" id="generationStats"><div class="stat"><b>${stats.trains}</b><span>上下 合計本数</span></div><div class="stat"><b>${stats.journey}</b><span>始発 所要分</span></div><div class="stat"><b>${stats.branchCount}</b><span>支線 本数</span></div><div class="stat"><b>${stats.throughCount}</b><span>直通 本数</span></div></div><button class="primary wide generate-button" data-action="generate">時刻表を生成する</button>`;
   }
   const isInPeriod = (trip, selectedPeriod) => {
@@ -505,7 +510,7 @@
     const directionLabel = direction === 'up' ? route.upLabel : route.downLabel;
     $('#timetableControls').innerHTML = `<div class="segmented"><button class="${direction === 'up' ? 'active' : ''}" data-direction="up">上り</button><button class="${direction === 'down' ? 'active' : ''}" data-direction="down">下り</button></div><div class="segmented"><button class="${period === 'morning' ? 'active' : ''}" data-period="morning">朝 4–10</button><button class="${period === 'day' ? 'active' : ''}" data-period="day">昼 10–16</button><button class="${period === 'evening' ? 'active' : ''}" data-period="evening">夜 16–4</button><button class="${period === 'all' ? 'active' : ''}" data-period="all">全日</button></div><div class="direction-card" style="--route-color:${colorOf(route.color)}"><div><small>${esc(route.operator)} · ${esc(route.code)}</small><b>${esc(directionLabel)}</b></div><div class="direction-arrow"><span>${esc(current.baseSequence[0].name)}</span><i></i><span>${esc(current.baseSequence[current.baseSequence.length - 1].name)}</span></div></div><p class="table-tip">列車番号・行先をタップすると、その列車だけ編集できます。</p>`;
     if (!trips.length) { $('#timetable').innerHTML = `<div class="empty-state"><div class="empty-icon">◷</div><h3>この時間帯の列車はありません</h3><p>時間帯を変更するか、運行条件を調整してください。</p><button class="secondary" data-action="go-generate">運行条件へ</button></div>`; return; }
-    const header = trips.map((trip) => `<th><button class="train-edit" data-edit-train="${esc(trip.id)}" style="--service-color:${colorOf(trip.serviceColor, '#41506e')}"><span class="train-name"><i>${esc(trip.short)}</i> ${esc(trip.id)}</span><span class="train-destination">${trip.branchId ? '分 ' : (trip.through ? '↗ ' : '')}${esc(trip.destination)}ゆき</span><span class="train-time">${formatTime(trip.departure, false)}</span></button></th>`).join('');
+    const header = trips.map((trip) => `<th><button class="train-edit" data-edit-train="${esc(trip.id)}" style="--service-color:${colorOf(trip.serviceColor, '#41506e')}"><span class="train-name"><i>${esc(trip.short)}</i> ${esc(trip.id)}</span><span class="train-destination">${trip.branchId ? '分 ' : (trip.through ? `↗ ${trip.throughLineName ? `${esc(trip.throughLineName)}・` : ''}` : '')}${esc(trip.destination)}ゆき</span><span class="train-time">${formatTime(trip.departure, false)}</span></button></th>`).join('');
     const rows = current.sequence.map((station, index) => {
       const previous = current.sequence[index - 1];
       const boundary = Boolean(previous && station.connectionType && (previous.lineId !== station.lineId || previous.branchId !== station.branchId || previous.connectionType !== station.connectionType));
@@ -524,7 +529,7 @@
   function closeModal() { $('#modalBackdrop').hidden = true; document.body.style.overflow = ''; }
   function openDataMenu() { openModal('データの入出力', 'DATA', `<div class="data-menu"><button class="data-action" data-modal-action="export-json"><b>路線データを書き出す</b><span>全路線・種別・支線・直通・列車別設定をJSONでコピー</span></button><button class="data-action" data-modal-action="import-json"><b>路線データを読み込む</b><span>JSONを貼り付けて現在のデータと置き換え</span></button><button class="data-action" data-modal-action="restore-demo"><b>サンプルからやり直す</b><span>直通設定済みの星河線・海浜線へ戻す</span></button></div><p class="modal-note">すべてのデータはこの端末内だけに保存され、外部へ送信されません。</p>`); }
   const csvCell = (value) => `"${String(value == null ? '' : value).replace(/"/g, '""')}"`;
-  function makeCsv() { const route = line(); const schedule = scheduleFor(route); const rows = [['基準路線', '方向', '列車番号', '種別', '行先', '支線', '直通', '走行路線', '駅順', '駅名', '時刻', '扱い']]; ['up', 'down'].forEach((dir) => { const directionName = dir === 'up' ? route.upLabel : route.downLabel; schedule[dir].trips.forEach((trip) => { schedule[dir].sequence.forEach((station, index) => { const time = trip.times[stationTimeKey(station)]; rows.push([route.name, directionName, trip.id, trip.kind, trip.destination, trip.branchName, trip.through ? '直通' : '', station.connectionName || station.lineName, index + 1, station.name, typeof time === 'number' ? formatTime(time) : '', time === null ? '通過' : (typeof time === 'undefined' ? '運転なし' : '停車')]); }); }); }); return rows.map((row) => row.map(csvCell).join(',')).join('\r\n'); }
+  function makeCsv() { const route = line(); const schedule = scheduleFor(route); const rows = [['基準路線', '方向', '列車番号', '種別', '行先', '支線', '直通', '直通路線', '直通先方面', '直通先種別', '走行路線', '駅順', '駅名', '時刻', '扱い']]; ['up', 'down'].forEach((dir) => { const directionName = dir === 'up' ? route.upLabel : route.downLabel; schedule[dir].trips.forEach((trip) => { schedule[dir].sequence.forEach((station, index) => { const time = trip.times[stationTimeKey(station)]; rows.push([route.name, directionName, trip.id, trip.kind, trip.destination, trip.branchName, trip.through ? '直通' : '', trip.throughLineName, trip.throughDirectionLabel, trip.throughServiceName, station.connectionName || station.lineName, index + 1, station.name, typeof time === 'number' ? formatTime(time) : '', time === null ? '通過' : (typeof time === 'undefined' ? '運転なし' : '停車')]); }); }); }); return rows.map((row) => row.map(csvCell).join(',')).join('\r\n'); }
   function openTextOutput(title, eyebrow, text, note) { openModal(title, eyebrow, `<textarea id="dataTextarea" aria-label="書き出しデータ" spellcheck="false"></textarea><div class="modal-copy"><button class="primary" data-modal-action="copy-text">クリップボードへコピー</button><button class="secondary" data-modal-action="select-all">すべて選択</button></div><p class="modal-note">${esc(note)}</p>`); $('#dataTextarea').value = text; }
   async function copyTextarea() { const textarea = $('#dataTextarea'); if (!textarea) return; try { if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(textarea.value); else throw new Error('clipboard unavailable'); showToast('クリップボードへコピーしました'); } catch (_) { textarea.focus(); textarea.select(); showToast(document.execCommand('copy') ? 'クリップボードへコピーしました' : '選択した内容をコピーしてください'); } }
 
@@ -535,17 +540,16 @@
     const stationMap = {}; copy.stations.forEach((station) => { const old = station.id; station.id = makeId('st'); stationMap[old] = station.id; station.stops = station.stops.map((id) => serviceMap[id]).filter(Boolean); });
     copy.branches = (copy.branches || []).map((branch) => ({ ...branch, id: makeId('branch'), junctionStationId: stationMap[branch.junctionStationId] || copy.stations[0].id }));
     copy.overrides = { up: {}, down: {} };
-    ['up', 'down'].forEach((dir) => { if (copy.through[dir].targetLineId === source.id) copy.through[dir] = emptyThrough(); });
     copy.branches.forEach((branch) => { if (branch.targetLineId === source.id) { branch.enabled = false; branch.targetLineId = ''; branch.targetServiceId = ''; } });
     state.lines.push(copy); state.selectedId = copy.id; save(); navigate('lines', false); showToast('路線を複製しました');
   }
   function askDeleteLine() { openModal('この路線を削除しますか？', 'CONFIRM', `<p class="modal-note">「${esc(line().name)}」の駅・種別・支線・直通・列車別設定も削除されます。</p><div class="action-row"><button class="secondary" data-modal-action="cancel">キャンセル</button><button class="danger-button" data-modal-action="confirm-delete-line">削除する</button></div>`); }
-  function deleteLine() { const deletedId = state.selectedId; const index = state.lines.findIndex((item) => item.id === deletedId); state.lines.splice(index, 1); if (!state.lines.length) state.lines.push(blankLine(1)); state.lines.forEach((route) => { ['up', 'down'].forEach((dir) => { if (route.through[dir].targetLineId === deletedId) route.through[dir] = emptyThrough(); }); route.branches.forEach((branch) => { if (branch.targetLineId === deletedId) { branch.enabled = false; branch.targetLineId = ''; branch.targetServiceId = ''; } }); }); const next = state.lines[Math.max(0, index - 1)]; state.selectedId = (next && next.id) || state.lines[0].id; save(); closeModal(); navigate('lines', false); showToast('路線を削除しました'); }
+  function deleteLine() { const deletedId = state.selectedId; const index = state.lines.findIndex((item) => item.id === deletedId); state.lines.splice(index, 1); if (!state.lines.length) state.lines.push(blankLine(1)); state.lines.forEach((route) => { route.branches.forEach((branch) => { if (branch.targetLineId === deletedId) { branch.enabled = false; branch.targetLineId = ''; branch.targetServiceId = ''; } }); }); const next = state.lines[Math.max(0, index - 1)]; state.selectedId = (next && next.id) || state.lines[0].id; save(); closeModal(); navigate('lines', false); showToast('路線を削除しました'); }
   function addStation() { const route = line(); route.stations.push({ id: makeId('st'), name: `新駅 ${route.stations.length + 1}`, km: 1.5, dwell: 40, stops: [] }); save(); renderStations(); setTimeout(() => window.scrollTo(0, document.body.scrollHeight), 50); }
   function removeStation(index) { const route = line(); const stations = route.stations; if (stations.length <= 2) { showToast('路線には2駅以上必要です'); return; } const removed = stations[index]; stations.splice(index, 1); stations[0].km = 0; route.branches.forEach((branch) => { if (branch.junctionStationId === removed.id) branch.junctionStationId = stations[Math.min(index, stations.length - 1)].id; }); save(); renderStations(); showToast('駅を削除しました'); }
   function moveStation(index, movement) { const stations = line().stations; const target = movement === 'up' ? index - 1 : index + 1; if (target < 0 || target >= stations.length) return; [stations[index], stations[target]] = [stations[target], stations[index]]; stations[0].km = 0; if (target === 0 || index === 0) stations[1].km = Math.max(.1, numberOf(stations[1].km, 1, .1, 99.9)); save(); renderStations(); }
   function addService() { const route = line(); if (route.services.length >= 12) { showToast('種別は12種類までです'); return; } route.services.push(newService(`新種別 ${route.services.length + 1}`, '新', '#8a55c7', 0, false)); save(); renderGenerator(); showToast('列車種別を追加しました'); }
-  function removeService(serviceId) { const route = line(); const index = route.services.findIndex((service) => service.id === serviceId); if (index <= 0) return; route.services.splice(index, 1); route.stations.forEach((station) => { station.stops = station.stops.filter((id) => id !== serviceId); }); ['up', 'down'].forEach((dir) => Object.keys(route.overrides[dir]).forEach((id) => { if (route.overrides[dir][id].serviceId === serviceId) delete route.overrides[dir][id].serviceId; })); state.lines.forEach((other) => { ['up', 'down'].forEach((dir) => { const config = other.through[dir]; if (config.targetLineId === route.id && config.targetServiceId === serviceId) config.targetServiceId = route.services[0].id; }); other.branches.forEach((branch) => { if (branch.targetLineId === route.id && branch.targetServiceId === serviceId) branch.targetServiceId = route.services[0].id; }); }); save(); renderGenerator(); showToast('列車種別を削除しました'); }
+  function removeService(serviceId) { const route = line(); const index = route.services.findIndex((service) => service.id === serviceId); if (index <= 0) return; route.services.splice(index, 1); route.stations.forEach((station) => { station.stops = station.stops.filter((id) => id !== serviceId); }); ['up', 'down'].forEach((dir) => Object.keys(route.overrides[dir]).forEach((id) => { if (route.overrides[dir][id].serviceId === serviceId) delete route.overrides[dir][id].serviceId; })); state.lines.forEach((other) => { other.branches.forEach((branch) => { if (branch.targetLineId === route.id && branch.targetServiceId === serviceId) branch.targetServiceId = route.services[0].id; }); }); save(); renderGenerator(); showToast('列車種別を削除しました'); }
   function addBranch() {
     const route = line(); const target = state.lines.find((item) => item.id !== route.id);
     if (!target) { showToast('支線に使う2つ目の路線を作成してください'); return; }
@@ -568,7 +572,7 @@
     const branches = branchContexts(route, direction, state);
     const throughValue = override.through === true ? 'yes' : (override.through === false ? 'no' : 'auto');
     const branchValue = override.branchId || 'auto';
-    const operationNote = trip.branchId ? `・${trip.branchName}` : (trip.through ? '・直通列車' : '');
+    const operationNote = trip.branchId ? `・${trip.branchName}` : (trip.through ? `・${trip.throughLineName || '他路線'}へ直通` : '');
     openModal(`${trainId}を編集`, 'TRAIN', `<input type="hidden" id="editTrainId" value="${esc(trainId)}"><input type="hidden" id="editTrainDirection" value="${direction}"><div class="train-summary"><span style="background:${colorOf(trip.serviceColor, '#41506e')}">${esc(trip.short)}</span><div><b>${esc(trip.kind)} ${esc(trip.destination)}ゆき</b><small>${formatTime(trip.departure)}発${esc(operationNote)}</small></div></div><div class="form-grid"><label class="field full"><span>この列車の種別</span><select id="editTrainService"><option value="">自動設定</option>${route.services.map((service) => `<option value="${esc(service.id)}" ${override.serviceId === service.id ? 'selected' : ''}>${esc(service.name)}</option>`).join('')}</select></label><label class="field full"><span>この列車の行先</span><input id="editTrainDestination" maxlength="40" value="${esc(override.destination || '')}" placeholder="自動：${esc(trip.destination)}"></label>${branches.length ? `<label class="field full"><span>支線運転</span><select id="editTrainBranch"><option value="auto" ${branchValue === 'auto' ? 'selected' : ''}>自動設定</option><option value="none" ${branchValue === 'none' ? 'selected' : ''}>本線を運転</option>${branches.map((branch) => `<option value="${esc(branch.config.id)}" ${branchValue === branch.config.id ? 'selected' : ''}>${esc(branch.config.name)}を運転</option>`).join('')}</select></label>` : ''}${directAvailable ? `<label class="field full"><span>直通運転</span><select id="editTrainThrough"><option value="auto" ${throughValue === 'auto' ? 'selected' : ''}>自動設定</option><option value="yes" ${throughValue === 'yes' ? 'selected' : ''}>この列車は直通</option><option value="no" ${throughValue === 'no' ? 'selected' : ''}>この列車は直通しない</option></select></label>` : ''}</div><div class="action-row"><button class="secondary" data-modal-action="reset-train">自動へ戻す</button><button class="primary" data-modal-action="save-train">保存する</button></div>`);
   }
   function saveTrainOverride(reset) {
@@ -585,7 +589,7 @@
     }
     save(); closeModal(); renderTimetable(); showToast(reset ? '列車を自動設定へ戻しました' : '列車設定を保存しました');
   }
-  function updateThroughField(target) { const route = line(); const config = route.through[target.dataset.throughDir]; const field = target.dataset.throughField; if (!config || !field) return false; let value = target.type === 'checkbox' ? target.checked : target.value; if (field === 'every') value = Math.round(numberOf(value, 4, 1, 20)); if (field === 'layover') value = Math.round(numberOf(value, 3, 0, 60)); config[field] = value; if (field === 'enabled' && value && !config.targetLineId) { const firstTarget = state.lines.find((item) => item.id !== route.id); if (firstTarget) { config.targetLineId = firstTarget.id; config.targetServiceId = firstTarget.services[0].id; } } if (field === 'targetLineId') { const targetLine = state.lines.find((item) => item.id === value); config.targetServiceId = targetLine ? targetLine.services[0].id : ''; config.destination = ''; } save(); return field === 'enabled' || field === 'targetLineId' || field === 'targetDirection'; }
+  function updateThroughField(target) { const config = line().through[target.dataset.throughDir]; const field = target.dataset.throughField; if (!config || !field) return false; let value = target.type === 'checkbox' ? target.checked : target.value; if (field === 'every') value = Math.round(numberOf(value, 4, 1, 20)); if (field === 'layover') value = Math.round(numberOf(value, 3, 0, 60)); if (field === 'lineName' || field === 'directionLabel' || field === 'destination') value = value.slice(0, 40); if (field === 'serviceName') value = value.slice(0, 20); config[field] = value; save(); return field === 'enabled'; }
   function updateBranchField(target) {
     const route = line(); const branch = route.branches.find((item) => item.id === target.dataset.branchId); const field = target.dataset.branchField;
     if (!branch || !field) return false;
