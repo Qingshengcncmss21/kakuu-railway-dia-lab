@@ -2,7 +2,7 @@
   'use strict';
 
   const STORAGE_KEY = 'kakuu-railway-dia-lab-v1';
-  const APP_VERSION = 4;
+  const APP_VERSION = 5;
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
@@ -21,6 +21,13 @@
     const number = Number(value);
     return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : fallback;
   };
+  const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value || {}, key);
+  const cleanPlatform = (value) => String(value || '').trim().slice(0, 12);
+  const platformLabel = (value) => {
+    const platform = cleanPlatform(value);
+    return platform ? (/番線$/.test(platform) ? platform : `${platform}番線`) : '番線未設定';
+  };
+  const safeMinute = (value) => value !== null && value !== '' && Number.isFinite(Number(value)) ? Math.round(numberOf(value, 0, 0, 10079)) : null;
 
   const newService = (name, shortName, color, every, allStops) => ({
     id: makeId('svc'), name, short: shortName, color, every, allStops
@@ -162,6 +169,28 @@
         if (typeof item.destination === 'string' && item.destination.trim()) clean.destination = item.destination.trim().slice(0, 40);
         if (item.through === true || item.through === false) clean.through = item.through;
         if (item.branchId === 'none' || validBranchIds.has(item.branchId)) clean.branchId = item.branchId;
+        if (typeof item.platform === 'string' && item.platform.trim()) clean.platform = cleanPlatform(item.platform);
+        const departure = safeMinute(item.departure);
+        if (departure !== null) clean.departure = departure;
+        if (item.stationStops && typeof item.stationStops === 'object') {
+          const stationStops = {};
+          Object.keys(item.stationStops).slice(0, 120).forEach((key) => {
+            if (key.length <= 100 && (item.stationStops[key] === true || item.stationStops[key] === false)) stationStops[key] = item.stationStops[key];
+          });
+          if (Object.keys(stationStops).length) clean.stationStops = stationStops;
+        }
+        if (item.stationTimes && typeof item.stationTimes === 'object') {
+          const stationTimes = {};
+          Object.keys(item.stationTimes).slice(0, 120).forEach((key) => {
+            if (key.length > 100) return;
+            const source = item.stationTimes[key]; const point = {};
+            const arrival = safeMinute(source && source.arrival); const stationDeparture = safeMinute(source && source.departure);
+            if (arrival !== null) point.arrival = arrival;
+            if (stationDeparture !== null) point.departure = stationDeparture;
+            if (Object.keys(point).length) stationTimes[key] = point;
+          });
+          if (Object.keys(stationTimes).length) clean.stationTimes = stationTimes;
+        }
         if (Object.keys(clean).length) result[dir][String(trainId).slice(0, 30)] = clean;
       });
     });
@@ -308,6 +337,16 @@
     const value = `${padNumber(Math.floor(clock / 60), 2)}:${padNumber(clock % 60, 2)}`;
     return showDay && day > 0 ? `翌 ${value}` : value;
   };
+  const timeInputValue = (minutes) => formatTime(minutes, false);
+  function parseEditorTime(value, reference) {
+    const match = /^(\d{1,2}):(\d{2})$/.exec(String(value || '').trim());
+    if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) return null;
+    const clock = Number(match[1]) * 60 + Number(match[2]);
+    const baseDay = Math.floor(Math.max(0, Number(reference) || 0) / 1440) * 1440;
+    return [baseDay - 1440 + clock, baseDay + clock, baseDay + 1440 + clock]
+      .filter((candidate) => candidate >= 0)
+      .sort((a, b) => Math.abs(a - reference) - Math.abs(b - reference))[0];
+  }
   const routeDistance = (route) => route.stations.reduce((total, station, index) => total + (index ? Number(station.km) || 0 : 0), 0);
 
   function routeSequence(route, dir) {
@@ -322,18 +361,35 @@
   function stationStops(station, position, length, service) {
     return position === 0 || position === length - 1 || service.allStops || station.stops.indexOf(service.id) >= 0;
   }
-  function runSegment(route, sequence, service, startClock, times) {
+  function trainStops(station, position, length, service, stopOverrides) {
+    const automatic = stationStops(station, position, length, service);
+    if (position === 0 || position === length - 1) return { stop: true, automatic, locked: true };
+    const key = stationTimeKey(station);
+    return { stop: hasOwn(stopOverrides, key) ? stopOverrides[key] : automatic, automatic, locked: false };
+  }
+  function startSegment(sequence, clock, times, stopTimes) {
+    if (!sequence.length) return;
+    const key = stationTimeKey(sequence[0]);
+    times[key] = clock;
+    stopTimes[key] = { arrival: clock, departure: clock, stop: true, automatic: true, locked: true };
+  }
+  function runSegment(route, sequence, service, startClock, times, stopTimes, stopOverrides) {
     const originalIndex = new Map(route.stations.map((station, index) => [station.id, index]));
     let clock = startClock;
     for (let position = 1; position < sequence.length; position += 1) {
       const previous = sequence[position - 1]; const current = sequence[position];
-      if (position > 1 && stationStops(previous, position - 1, sequence.length, service)) clock += Math.ceil(numberOf(previous.dwell, 40, 0, 600) / 60);
+      const previousDetail = stopTimes[stationTimeKey(previous)];
+      if (previousDetail) clock = previousDetail.departure;
       const a = originalIndex.get(sourceStationId(previous)); const b = originalIndex.get(sourceStationId(current));
       const segmentStation = route.stations[Math.max(a, b)];
       const km = numberOf(segmentStation && segmentStation.km, 1, .1, 99.9);
       const speed = numberOf(route.settings.speed, 45, 10, 160);
       clock += Math.max(1, Math.round((km / speed) * 60 + .7));
-      times[stationTimeKey(current)] = stationStops(current, position, sequence.length, service) ? clock : null;
+      const stopState = trainStops(current, position, sequence.length, service, stopOverrides);
+      const key = stationTimeKey(current);
+      const dwell = stopState.stop && position < sequence.length - 1 ? Math.ceil(numberOf(current.dwell, 40, 0, 600) / 60) : 0;
+      stopTimes[key] = { arrival: clock, departure: clock + dwell, stop: stopState.stop, automatic: stopState.automatic, locked: stopState.locked };
+      times[key] = stopState.stop ? clock : null;
     }
     return clock;
   }
@@ -379,47 +435,74 @@
     const direct = throughContext(route, dir, contextState);
     const displaySequence = baseSequence.concat(...branches.map((branch) => branch.sequence));
     const trips = [];
-    for (let departure = first, tripIndex = 0; departure <= last && tripIndex < 400; departure += headway, tripIndex += 1) {
+    for (let scheduledDeparture = first, tripIndex = 0; scheduledDeparture <= last && tripIndex < 400; scheduledDeparture += headway, tripIndex += 1) {
       const trainNumber = tripIndex + 1;
       const trainId = `${route.code}${padNumber(trainNumber, 3)}${dir === 'up' ? 'A' : 'B'}`;
       const override = route.overrides[dir][trainId] || {};
       const service = chooseService(route, trainNumber, override);
+      const editedDeparture = safeMinute(override.departure);
+      const departure = editedDeparture === null ? scheduledDeparture : editedDeparture;
+      const stopOverrides = override.stationStops || {};
       let branch = null;
       if (override.branchId && override.branchId !== 'none') branch = branches.find((item) => item.config.id === override.branchId) || null;
       else if (override.branchId !== 'none' && override.through !== true) branch = branches.find((item) => trainNumber % item.config.every === 0) || null;
       const automaticThrough = Boolean(!branch && direct && trainNumber % direct.config.every === 0);
       const isThrough = Boolean(!branch && direct && (override.through === true || (override.through !== false && automaticThrough)));
-      const times = {}; let clock = departure;
+      const times = {}; const stopTimes = {}; let clock = departure; let stationSequence = [];
       let destination = (dir === 'up' ? route.upDestination : route.downDestination) || baseSequence[baseSequence.length - 1].name;
       if (branch && branch.outward) {
         const mainSegment = baseSequence.slice(0, branch.junctionIndex + 1);
-        times[stationTimeKey(mainSegment[0])] = clock;
-        clock = runSegment(route, mainSegment, service, clock, times);
-        clock += branch.config.layover; times[stationTimeKey(branch.sequence[0])] = clock;
-        clock = runSegment(branch.target, branch.sequence, branch.targetService, clock, times);
+        stationSequence = mainSegment.concat(branch.sequence);
+        startSegment(mainSegment, clock, times, stopTimes);
+        clock = runSegment(route, mainSegment, service, clock, times, stopTimes, stopOverrides);
+        clock += branch.config.layover;
+        const junctionDetail = stopTimes[stationTimeKey(mainSegment[mainSegment.length - 1])];
+        if (junctionDetail) junctionDetail.departure = clock;
+        startSegment(branch.sequence, clock, times, stopTimes);
+        clock = runSegment(branch.target, branch.sequence, branch.targetService, clock, times, stopTimes, stopOverrides);
         destination = branch.config.destination || branch.sequence[branch.sequence.length - 1].name;
       } else if (branch) {
-        times[stationTimeKey(branch.sequence[0])] = clock;
-        clock = runSegment(branch.target, branch.sequence, branch.targetService, clock, times);
-        clock += branch.config.layover;
         const mainSegment = baseSequence.slice(branch.junctionIndex);
-        times[stationTimeKey(mainSegment[0])] = clock;
-        clock = runSegment(route, mainSegment, service, clock, times);
+        stationSequence = branch.sequence.concat(mainSegment);
+        startSegment(branch.sequence, clock, times, stopTimes);
+        clock = runSegment(branch.target, branch.sequence, branch.targetService, clock, times, stopTimes, stopOverrides);
+        clock += branch.config.layover;
+        const branchJunctionDetail = stopTimes[stationTimeKey(branch.sequence[branch.sequence.length - 1])];
+        if (branchJunctionDetail) branchJunctionDetail.departure = clock;
+        startSegment(mainSegment, clock, times, stopTimes);
+        clock = runSegment(route, mainSegment, service, clock, times, stopTimes, stopOverrides);
       } else {
-        times[stationTimeKey(baseSequence[0])] = clock;
-        clock = runSegment(route, baseSequence, service, clock, times);
+        stationSequence = baseSequence;
+        startSegment(baseSequence, clock, times, stopTimes);
+        clock = runSegment(route, baseSequence, service, clock, times, stopTimes, stopOverrides);
         if (isThrough) {
           clock += direct.config.layover;
           destination = direct.config.destination || destination;
         }
       }
+      const editedStationTimes = override.stationTimes || {};
+      Object.keys(editedStationTimes).forEach((key) => {
+        const detail = stopTimes[key]; if (!detail) return;
+        const arrival = safeMinute(editedStationTimes[key].arrival);
+        const stationDeparture = safeMinute(editedStationTimes[key].departure);
+        if (arrival !== null) detail.arrival = arrival;
+        if (stationDeparture !== null) detail.departure = stationDeparture;
+      });
+      stationSequence.forEach((station, index) => {
+        const key = stationTimeKey(station); const detail = stopTimes[key];
+        if (detail) times[key] = detail.stop ? (index === 0 ? detail.departure : detail.arrival) : null;
+      });
       if (override.destination) destination = override.destination;
       trips.push({ id: trainId, serviceId: service.id, kind: service.name, short: service.short,
-        serviceColor: service.color, departure, arrival: clock, destination, through: isThrough,
+        serviceColor: service.color, scheduledDeparture, departure,
+        arrival: stopTimes[stationTimeKey(stationSequence[stationSequence.length - 1])]
+          ? stopTimes[stationTimeKey(stationSequence[stationSequence.length - 1])].arrival : clock,
+        platform: cleanPlatform(override.platform) || (dir === 'up' ? '1' : '2'), destination, through: isThrough,
         throughLineName: isThrough ? direct.config.lineName : '',
         throughDirectionLabel: isThrough ? direct.config.directionLabel : '',
         throughServiceName: isThrough ? direct.config.serviceName : '',
-        branchId: branch ? branch.config.id : '', branchName: branch ? branch.config.name : '', times });
+        branchId: branch ? branch.config.id : '', branchName: branch ? branch.config.name : '',
+        stationSequence, stopTimes, times });
     }
     return { sequence: displaySequence, baseSequence, trips };
   }
@@ -508,9 +591,9 @@
     const route = line(); const schedule = scheduleFor(route); const current = schedule[direction];
     const trips = current.trips.filter((trip) => isInPeriod(trip, period));
     const directionLabel = direction === 'up' ? route.upLabel : route.downLabel;
-    $('#timetableControls').innerHTML = `<div class="segmented"><button class="${direction === 'up' ? 'active' : ''}" data-direction="up">上り</button><button class="${direction === 'down' ? 'active' : ''}" data-direction="down">下り</button></div><div class="segmented"><button class="${period === 'morning' ? 'active' : ''}" data-period="morning">朝 4–10</button><button class="${period === 'day' ? 'active' : ''}" data-period="day">昼 10–16</button><button class="${period === 'evening' ? 'active' : ''}" data-period="evening">夜 16–4</button><button class="${period === 'all' ? 'active' : ''}" data-period="all">全日</button></div><div class="direction-card" style="--route-color:${colorOf(route.color)}"><div><small>${esc(route.operator)} · ${esc(route.code)}</small><b>${esc(directionLabel)}</b></div><div class="direction-arrow"><span>${esc(current.baseSequence[0].name)}</span><i></i><span>${esc(current.baseSequence[current.baseSequence.length - 1].name)}</span></div></div><p class="table-tip">列車番号・行先をタップすると、その列車だけ編集できます。</p>`;
+    $('#timetableControls').innerHTML = `<div class="segmented"><button class="${direction === 'up' ? 'active' : ''}" data-direction="up">上り</button><button class="${direction === 'down' ? 'active' : ''}" data-direction="down">下り</button></div><div class="segmented"><button class="${period === 'morning' ? 'active' : ''}" data-period="morning">朝 4–10</button><button class="${period === 'day' ? 'active' : ''}" data-period="day">昼 10–16</button><button class="${period === 'evening' ? 'active' : ''}" data-period="evening">夜 16–4</button><button class="${period === 'all' ? 'active' : ''}" data-period="all">全日</button></div><div class="direction-card" style="--route-color:${colorOf(route.color)}"><div><small>${esc(route.operator)} · ${esc(route.code)}</small><b>${esc(directionLabel)}</b></div><div class="direction-arrow"><span>${esc(current.baseSequence[0].name)}</span><i></i><span>${esc(current.baseSequence[current.baseSequence.length - 1].name)}</span></div></div><p class="table-tip">列車をタップすると、行先・種別・番線・発車時刻・各駅の着発時刻を編集できます。</p>`;
     if (!trips.length) { $('#timetable').innerHTML = `<div class="empty-state"><div class="empty-icon">◷</div><h3>この時間帯の列車はありません</h3><p>時間帯を変更するか、運行条件を調整してください。</p><button class="secondary" data-action="go-generate">運行条件へ</button></div>`; return; }
-    const header = trips.map((trip) => `<th><button class="train-edit" data-edit-train="${esc(trip.id)}" style="--service-color:${colorOf(trip.serviceColor, '#41506e')}"><span class="train-name"><i>${esc(trip.short)}</i> ${esc(trip.id)}</span><span class="train-destination">${trip.branchId ? '分 ' : (trip.through ? `↗ ${trip.throughLineName ? `${esc(trip.throughLineName)}・` : ''}` : '')}${esc(trip.destination)}ゆき</span><span class="train-time">${formatTime(trip.departure, false)}</span></button></th>`).join('');
+    const header = trips.map((trip) => `<th><button class="train-edit" data-edit-train="${esc(trip.id)}" style="--service-color:${colorOf(trip.serviceColor, '#41506e')}"><span class="train-name"><i>${esc(trip.short)}</i> ${esc(trip.id)}</span><span class="train-destination">${trip.branchId ? '分 ' : (trip.through ? `↗ ${trip.throughLineName ? `${esc(trip.throughLineName)}・` : ''}` : '')}${esc(trip.destination)}ゆき</span><span class="train-platform">${esc(platformLabel(trip.platform))}</span><span class="train-time">${formatTime(trip.departure, false)}</span></button></th>`).join('');
     const rows = current.sequence.map((station, index) => {
       const previous = current.sequence[index - 1];
       const boundary = Boolean(previous && station.connectionType && (previous.lineId !== station.lineId || previous.branchId !== station.branchId || previous.connectionType !== station.connectionType));
@@ -527,9 +610,9 @@
   function updateGenerationStats() { const container = $('#generationStats'); if (!container) return; const stats = generationStats(line()); container.innerHTML = `<div class="stat"><b>${stats.trains}</b><span>上下 合計本数</span></div><div class="stat"><b>${stats.journey}</b><span>始発 所要分</span></div><div class="stat"><b>${stats.branchCount}</b><span>支線 本数</span></div><div class="stat"><b>${stats.throughCount}</b><span>直通 本数</span></div>`; }
   function openModal(title, eyebrow, content) { $('#modalTitle').textContent = title; $('#modalEyebrow').textContent = eyebrow; $('#modalContent').innerHTML = content; $('#modalBackdrop').hidden = false; document.body.style.overflow = 'hidden'; }
   function closeModal() { $('#modalBackdrop').hidden = true; document.body.style.overflow = ''; }
-  function openDataMenu() { openModal('データの入出力', 'DATA', `<div class="data-menu"><button class="data-action" data-modal-action="export-json"><b>路線データを書き出す</b><span>全路線・種別・支線・直通・列車別設定をJSONでコピー</span></button><button class="data-action" data-modal-action="import-json"><b>路線データを読み込む</b><span>JSONを貼り付けて現在のデータと置き換え</span></button><button class="data-action" data-modal-action="restore-demo"><b>サンプルからやり直す</b><span>直通設定済みの星河線・海浜線へ戻す</span></button></div><p class="modal-note">すべてのデータはこの端末内だけに保存され、外部へ送信されません。</p>`); }
+  function openDataMenu() { openModal('データの入出力', 'DATA', `<div class="data-menu"><button class="data-action" data-modal-action="export-json"><b>路線データを書き出す</b><span>全路線・種別・支線・直通・番線・各駅時刻をJSONでコピー</span></button><button class="data-action" data-modal-action="import-json"><b>路線データを読み込む</b><span>JSONを貼り付けて現在のデータと置き換え</span></button><button class="data-action" data-modal-action="restore-demo"><b>サンプルからやり直す</b><span>直通設定済みの星河線・海浜線へ戻す</span></button></div><p class="modal-note">すべてのデータはこの端末内だけに保存され、外部へ送信されません。</p>`); }
   const csvCell = (value) => `"${String(value == null ? '' : value).replace(/"/g, '""')}"`;
-  function makeCsv() { const route = line(); const schedule = scheduleFor(route); const rows = [['基準路線', '方向', '列車番号', '種別', '行先', '支線', '直通', '直通路線', '直通先方面', '直通先種別', '走行路線', '駅順', '駅名', '時刻', '扱い']]; ['up', 'down'].forEach((dir) => { const directionName = dir === 'up' ? route.upLabel : route.downLabel; schedule[dir].trips.forEach((trip) => { schedule[dir].sequence.forEach((station, index) => { const time = trip.times[stationTimeKey(station)]; rows.push([route.name, directionName, trip.id, trip.kind, trip.destination, trip.branchName, trip.through ? '直通' : '', trip.throughLineName, trip.throughDirectionLabel, trip.throughServiceName, station.connectionName || station.lineName, index + 1, station.name, typeof time === 'number' ? formatTime(time) : '', time === null ? '通過' : (typeof time === 'undefined' ? '運転なし' : '停車')]); }); }); }); return rows.map((row) => row.map(csvCell).join(',')).join('\r\n'); }
+  function makeCsv() { const route = line(); const schedule = scheduleFor(route); const rows = [['基準路線', '方向', '列車番号', '種別', '行先', '発車番線', '支線', '直通', '直通路線', '直通先方面', '直通先種別', '走行路線', '駅順', '駅名', '時刻', '到着時刻', '発車時刻', '扱い']]; ['up', 'down'].forEach((dir) => { const directionName = dir === 'up' ? route.upLabel : route.downLabel; schedule[dir].trips.forEach((trip) => { schedule[dir].sequence.forEach((station, index) => { const key = stationTimeKey(station); const time = trip.times[key]; const detail = trip.stopTimes[key]; rows.push([route.name, directionName, trip.id, trip.kind, trip.destination, platformLabel(trip.platform), trip.branchName, trip.through ? '直通' : '', trip.throughLineName, trip.throughDirectionLabel, trip.throughServiceName, station.connectionName || station.lineName, index + 1, station.name, typeof time === 'number' ? formatTime(time) : '', detail && detail.stop ? formatTime(detail.arrival) : '', detail && detail.stop ? formatTime(detail.departure) : '', time === null ? '通過' : (typeof time === 'undefined' ? '運転なし' : '停車')]); }); }); }); return rows.map((row) => row.map(csvCell).join(',')).join('\r\n'); }
   function openTextOutput(title, eyebrow, text, note) { openModal(title, eyebrow, `<textarea id="dataTextarea" aria-label="書き出しデータ" spellcheck="false"></textarea><div class="modal-copy"><button class="primary" data-modal-action="copy-text">クリップボードへコピー</button><button class="secondary" data-modal-action="select-all">すべて選択</button></div><p class="modal-note">${esc(note)}</p>`); $('#dataTextarea').value = text; }
   async function copyTextarea() { const textarea = $('#dataTextarea'); if (!textarea) return; try { if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(textarea.value); else throw new Error('clipboard unavailable'); showToast('クリップボードへコピーしました'); } catch (_) { textarea.focus(); textarea.select(); showToast(document.execCommand('copy') ? 'クリップボードへコピーしました' : '選択した内容をコピーしてください'); } }
 
@@ -565,6 +648,24 @@
     }));
     save(); renderGenerator(); showToast('支線設定を削除しました');
   }
+  function trainStopEditorHtml(trip, override, routeColor) {
+    const editedTimes = override.stationTimes || {};
+    return trip.stationSequence.map((station, index) => {
+      const key = stationTimeKey(station); const detail = trip.stopTimes[key]; if (!detail) return '';
+      const custom = editedTimes[key] || {}; const first = index === 0;
+      const arrivalValue = hasOwn(custom, 'arrival') ? timeInputValue(custom.arrival) : '';
+      const departureValue = hasOwn(custom, 'departure') ? timeInputValue(custom.departure) : '';
+      const routeName = station.connectionName || station.lineName;
+      return `<div class="train-stop-row ${detail.stop ? '' : 'passing'}" data-stop-row="${esc(key)}" style="--stop-color:${colorOf(station.lineColor, routeColor)}">
+        <div class="stop-time-display"><span><b>${formatTime(detail.arrival, false)}</b><small>${detail.stop ? '着' : '通過'}</small></span><span><b>${formatTime(detail.departure, false)}</b><small>${detail.stop ? '発' : '—'}</small></span></div>
+        <i class="stop-line-node"></i>
+        <div class="stop-detail-card"><div class="stop-detail-head"><div><small>${esc(routeName)}</small><b>${esc(station.name)}</b></div><select class="stop-mode-select" data-train-stop-key="${esc(key)}" data-auto-stop="${detail.automatic ? 'stop' : 'pass'}" ${detail.locked ? 'disabled' : ''}><option value="stop" ${detail.stop ? 'selected' : ''}>停車</option><option value="pass" ${detail.stop ? '' : 'selected'}>通過</option></select></div>
+          <div class="stop-time-edit"><label><span>着時刻を変更</span><input type="time" step="60" data-train-time-key="${esc(key)}" data-train-time-field="arrival" data-time-reference="${detail.arrival}" value="${arrivalValue}" placeholder="${timeInputValue(detail.arrival)}" ${detail.stop ? '' : 'disabled'}></label>${first ? `<div class="origin-time-note"><span>発車時刻</span><b>上の欄で編集</b></div>` : `<label><span>発時刻を変更</span><input type="time" step="60" data-train-time-key="${esc(key)}" data-train-time-field="departure" data-time-reference="${detail.departure}" value="${departureValue}" placeholder="${timeInputValue(detail.departure)}" ${detail.stop ? '' : 'disabled'}></label>`}</div>
+          <p>空欄は自動計算</p>
+        </div>
+      </div>`;
+    }).join('');
+  }
   function openTrainEditor(trainId) {
     const route = line(); const trip = buildTrips(route, direction).trips.find((item) => item.id === trainId); if (!trip) return;
     const override = route.overrides[direction][trainId] || {};
@@ -572,19 +673,47 @@
     const branches = branchContexts(route, direction, state);
     const throughValue = override.through === true ? 'yes' : (override.through === false ? 'no' : 'auto');
     const branchValue = override.branchId || 'auto';
-    const operationNote = trip.branchId ? `・${trip.branchName}` : (trip.through ? `・${trip.throughLineName || '他路線'}へ直通` : '');
-    openModal(`${trainId}を編集`, 'TRAIN', `<input type="hidden" id="editTrainId" value="${esc(trainId)}"><input type="hidden" id="editTrainDirection" value="${direction}"><div class="train-summary"><span style="background:${colorOf(trip.serviceColor, '#41506e')}">${esc(trip.short)}</span><div><b>${esc(trip.kind)} ${esc(trip.destination)}ゆき</b><small>${formatTime(trip.departure)}発${esc(operationNote)}</small></div></div><div class="form-grid"><label class="field full"><span>この列車の種別</span><select id="editTrainService"><option value="">自動設定</option>${route.services.map((service) => `<option value="${esc(service.id)}" ${override.serviceId === service.id ? 'selected' : ''}>${esc(service.name)}</option>`).join('')}</select></label><label class="field full"><span>この列車の行先</span><input id="editTrainDestination" maxlength="40" value="${esc(override.destination || '')}" placeholder="自動：${esc(trip.destination)}"></label>${branches.length ? `<label class="field full"><span>支線運転</span><select id="editTrainBranch"><option value="auto" ${branchValue === 'auto' ? 'selected' : ''}>自動設定</option><option value="none" ${branchValue === 'none' ? 'selected' : ''}>本線を運転</option>${branches.map((branch) => `<option value="${esc(branch.config.id)}" ${branchValue === branch.config.id ? 'selected' : ''}>${esc(branch.config.name)}を運転</option>`).join('')}</select></label>` : ''}${directAvailable ? `<label class="field full"><span>直通運転</span><select id="editTrainThrough"><option value="auto" ${throughValue === 'auto' ? 'selected' : ''}>自動設定</option><option value="yes" ${throughValue === 'yes' ? 'selected' : ''}>この列車は直通</option><option value="no" ${throughValue === 'no' ? 'selected' : ''}>この列車は直通しない</option></select></label>` : ''}</div><div class="action-row"><button class="secondary" data-modal-action="reset-train">自動へ戻す</button><button class="primary" data-modal-action="save-train">保存する</button></div>`);
+    const operationNote = trip.branchId ? trip.branchName : (trip.through ? `${trip.throughLineName || '他路線'}へ直通` : (direction === 'up' ? route.upLabel : route.downLabel));
+    const stopCount = Object.values(trip.stopTimes).filter((item) => item.stop).length;
+    const routeColor = colorOf(route.color);
+    openModal('列車詳細・編集', 'TRAIN INFO', `<input type="hidden" id="editTrainId" value="${esc(trainId)}"><input type="hidden" id="editTrainDirection" value="${direction}">
+      <div class="train-detail-hero" style="--detail-color:${routeColor};--service-color:${colorOf(trip.serviceColor, '#41506e')}"><div class="train-detail-top"><div class="train-detail-clock"><b>${formatTime(trip.departure, false)}</b><span>発</span></div><span class="train-detail-platform">${esc(platformLabel(trip.platform))}</span></div><div class="train-detail-service"><i>${esc(trip.kind)}</i><div><b>${esc(trip.destination)} 行</b><small>${esc(operationNote)}・列車番号 ${esc(trip.id)}</small></div></div></div>
+      <div class="form-grid train-detail-fields"><label class="field"><span>発車時刻</span><input type="time" step="60" id="editTrainDeparture" value="${timeInputValue(trip.departure)}"></label><label class="field suffix-field"><span>発車番線</span><input id="editTrainPlatform" maxlength="12" value="${esc(override.platform || '')}" placeholder="自動：${esc(trip.platform)}"><em>番線</em></label><label class="field full"><span>この列車の種別</span><select id="editTrainService"><option value="">自動設定：${esc(trip.kind)}</option>${route.services.map((service) => `<option value="${esc(service.id)}" ${override.serviceId === service.id ? 'selected' : ''}>${esc(service.name)}</option>`).join('')}</select></label><label class="field full"><span>この列車の行先</span><input id="editTrainDestination" maxlength="40" value="${esc(override.destination || '')}" placeholder="自動：${esc(trip.destination)}"></label>${branches.length ? `<label class="field full"><span>支線運転</span><select id="editTrainBranch"><option value="auto" ${branchValue === 'auto' ? 'selected' : ''}>自動設定</option><option value="none" ${branchValue === 'none' ? 'selected' : ''}>本線を運転</option>${branches.map((branch) => `<option value="${esc(branch.config.id)}" ${branchValue === branch.config.id ? 'selected' : ''}>${esc(branch.config.name)}を運転</option>`).join('')}</select></label>` : ''}${directAvailable ? `<label class="field full"><span>直通運転</span><select id="editTrainThrough"><option value="auto" ${throughValue === 'auto' ? 'selected' : ''}>自動設定</option><option value="yes" ${throughValue === 'yes' ? 'selected' : ''}>この列車は直通</option><option value="no" ${throughValue === 'no' ? 'selected' : ''}>この列車は直通しない</option></select></label>` : ''}</div>
+      <section class="train-stop-editor"><div class="train-stop-title"><div><b>停車駅情報</b><span>停車・通過と着発時刻を列車ごとに編集</span></div><em>${stopCount}駅停車</em></div><div class="train-stop-list">${trainStopEditorHtml(trip, override, routeColor)}</div></section>
+      <div class="action-row train-save-actions"><button class="secondary" data-modal-action="reset-train">全項目を自動へ戻す</button><button class="primary" data-modal-action="save-train">保存する</button></div>`);
   }
   function saveTrainOverride(reset) {
     const trainId = $('#editTrainId').value; const dir = $('#editTrainDirection').value; const route = line();
     if (reset) delete route.overrides[dir][trainId];
     else {
+      const trip = buildTrips(route, dir).trips.find((entry) => entry.id === trainId); if (!trip) return;
       const item = {}; const serviceId = $('#editTrainService').value; const destination = $('#editTrainDestination').value.trim();
+      const platform = cleanPlatform($('#editTrainPlatform').value); const departureRaw = $('#editTrainDeparture').value.trim();
+      const departure = departureRaw ? parseEditorTime(departureRaw, trip.departure) : trip.scheduledDeparture;
       const branchSelect = $('#editTrainBranch'); const throughSelect = $('#editTrainThrough');
+      if (departure === null) { showToast('発車時刻を確認してください'); return; }
       if (serviceId) item.serviceId = serviceId;
       if (destination) item.destination = destination.slice(0, 40);
+      if (platform) item.platform = platform;
+      if (departure !== trip.scheduledDeparture) item.departure = departure;
       if (branchSelect && branchSelect.value !== 'auto') item.branchId = branchSelect.value;
       if (throughSelect && throughSelect.value !== 'auto') item.through = throughSelect.value === 'yes';
+      const stationStops = {}; const selectedStops = {};
+      document.querySelectorAll('[data-train-stop-key]').forEach((select) => {
+        const key = select.dataset.trainStopKey; const stopped = select.value === 'stop'; const automatic = select.dataset.autoStop === 'stop';
+        selectedStops[key] = stopped; if (stopped !== automatic) stationStops[key] = stopped;
+      });
+      if (Object.keys(stationStops).length) item.stationStops = stationStops;
+      const stationTimes = {}; let invalidTime = false;
+      document.querySelectorAll('[data-train-time-key]').forEach((input) => {
+        const raw = input.value.trim(); const key = input.dataset.trainTimeKey; if (!raw || selectedStops[key] === false) return;
+        const parsed = parseEditorTime(raw, Number(input.dataset.timeReference));
+        if (parsed === null) { invalidTime = true; return; }
+        if (!stationTimes[key]) stationTimes[key] = {};
+        stationTimes[key][input.dataset.trainTimeField] = parsed;
+      });
+      if (invalidTime) { showToast('各駅の時刻を確認してください'); return; }
+      if (Object.keys(stationTimes).length) item.stationTimes = stationTimes;
       if (Object.keys(item).length) route.overrides[dir][trainId] = item; else delete route.overrides[dir][trainId];
     }
     save(); closeModal(); renderTimetable(); showToast(reset ? '列車を自動設定へ戻しました' : '列車設定を保存しました');
@@ -612,7 +741,7 @@
 
   $$('.bottom-nav button').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.nav)));
   $('#newLine').addEventListener('click', createLine); $('#addStation').addEventListener('click', addStation); $('#openData').addEventListener('click', openDataMenu); $('#closeModal').addEventListener('click', closeModal);
-  $('#exportCsv').addEventListener('click', () => openTextOutput('時刻表 CSV', 'EXPORT', makeCsv(), '行先・種別・支線・直通先を含む全列車データです。'));
+  $('#exportCsv').addEventListener('click', () => openTextOutput('時刻表 CSV', 'EXPORT', makeCsv(), '行先・種別・番線・着発時刻・支線・直通先を含む全列車データです。'));
   $('#modalBackdrop').addEventListener('click', (event) => { if (event.target === $('#modalBackdrop')) closeModal(); });
 
   document.addEventListener('input', (event) => {
@@ -626,6 +755,7 @@
   });
   document.addEventListener('change', (event) => {
     const target = event.target;
+    if (target.dataset.trainStopKey) { const row = target.closest('[data-stop-row]'); if (row) { const passing = target.value === 'pass'; row.classList.toggle('passing', passing); row.querySelectorAll('[data-train-time-key]').forEach((input) => { input.disabled = passing; }); } return; }
     if (target.dataset.stopService) { const station = line().stations[Number(target.dataset.index)]; if (!station) return; station.stops = station.stops.filter((id) => id !== target.dataset.stopService); if (target.checked) station.stops.push(target.dataset.stopService); save(); return; }
     if (target.dataset.serviceField === 'allStops') { const service = line().services.find((item) => item.id === target.dataset.serviceId); if (service) { service.allStops = target.checked; save(); renderGenerator(); } return; }
     if (target.dataset.branchField) { const rerender = updateBranchField(target); if (rerender) renderGenerator(); else updateGenerationStats(); return; }
@@ -641,10 +771,10 @@
     const dirButton = event.target.closest('[data-direction]'); if (dirButton) { direction = dirButton.dataset.direction; renderTimetable(); return; }
     const periodButton = event.target.closest('[data-period]'); if (periodButton) { period = periodButton.dataset.period; renderTimetable(); return; }
     const actionElement = event.target.closest('[data-action]'); const action = actionElement && actionElement.dataset.action;
-    if (action === 'duplicate-line') duplicateLine(); if (action === 'delete-line') askDeleteLine(); if (action === 'add-service') addService(); if (action === 'add-branch') addBranch(); if (action === 'generate') { navigate('timetable'); showToast('行先・種別・支線・直通を含む時刻表を生成しました'); } if (action === 'go-generate') navigate('generate');
+    if (action === 'duplicate-line') duplicateLine(); if (action === 'delete-line') askDeleteLine(); if (action === 'add-service') addService(); if (action === 'add-branch') addBranch(); if (action === 'generate') { navigate('timetable'); showToast('番線・着発時刻付きの時刻表を生成しました'); } if (action === 'go-generate') navigate('generate');
     const modalActionElement = event.target.closest('[data-modal-action]'); const modalAction = modalActionElement && modalActionElement.dataset.modalAction;
     if (modalAction === 'cancel') closeModal(); if (modalAction === 'confirm-delete-line') deleteLine(); if (modalAction === 'save-train') saveTrainOverride(false); if (modalAction === 'reset-train') saveTrainOverride(true);
-    if (modalAction === 'export-json') openTextOutput('路線データ JSON', 'EXPORT', JSON.stringify(state, null, 2), '全路線・種別・支線・直通・列車別設定を復元できます。');
+    if (modalAction === 'export-json') openTextOutput('路線データ JSON', 'EXPORT', JSON.stringify(state, null, 2), '全路線・種別・支線・直通・番線・各駅時刻を復元できます。');
     if (modalAction === 'import-json') openModal('路線データを読み込む', 'IMPORT', `<textarea id="dataTextarea" aria-label="読み込みデータ" spellcheck="false" placeholder="ここへJSONを貼り付け"></textarea><div class="action-row"><button class="secondary" data-modal-action="cancel">キャンセル</button><button class="primary" data-modal-action="apply-import">読み込む</button></div><p class="modal-note">現在の路線データは貼り付けた内容へ置き換わります。</p>`);
     if (modalAction === 'apply-import') { try { state = sanitizeState(JSON.parse($('#dataTextarea').value)); save(); closeModal(); navigate('lines'); showToast('路線データを読み込みました'); } catch (error) { showToast(error.message || 'JSONを確認してください'); } }
     if (modalAction === 'copy-text') copyTextarea(); if (modalAction === 'select-all') { const textarea = $('#dataTextarea'); if (textarea) { textarea.focus(); textarea.select(); } }

@@ -50,7 +50,7 @@ source = source.replace(marker, `
   globalThis.__diaTest = {
     defaultState, sanitizeState, buildTrips, scheduleFor, generationStats,
     formatTime, routeDistance, makeCsv, routeSequence, throughContext, branchContexts, stationTimeKey,
-    renderStations, renderGenerator, renderTimetable,
+    renderStations, renderGenerator, renderTimetable, openTrainEditor,
     getState: () => state
   };
 ${marker}`);
@@ -73,7 +73,7 @@ vm.runInNewContext(source, context, { filename: 'app.js' });
 
 const api = context.__diaTest;
 const state = api.getState();
-assert.strictEqual(state.version, 4);
+assert.strictEqual(state.version, 5);
 assert.strictEqual(state.lines.length, 2);
 const route = state.lines[0];
 const partner = state.lines[1];
@@ -95,6 +95,9 @@ assert.strictEqual(up.trips[3].destination, '潮見');
 assert.strictEqual(up.trips[3].throughLineName, '海浜線');
 assert.strictEqual(up.trips[3].throughDirectionLabel, '潮見方面');
 assert.strictEqual(up.trips[3].throughServiceName, '普通');
+assert.strictEqual(up.trips[0].platform, '1');
+assert.strictEqual(up.trips[0].stopTimes[route.stations[0].id].departure, up.trips[0].departure);
+assert.strictEqual(up.trips[2].stopTimes[route.stations[1].id].stop, false);
 assert.strictEqual(typeof up.trips[0].times[partner.stations[4].id], 'undefined');
 assert.strictEqual(typeof up.trips[3].times[partner.stations[4].id], 'undefined');
 assert.strictEqual(up.trips[2].kind, '快速');
@@ -104,12 +107,22 @@ assert.strictEqual(api.generationStats(route).throughCount, 18);
 route.overrides.up[up.trips[0].id] = {
   destination: '特別終点',
   serviceId: route.services[1].id,
-  through: true
+  through: true,
+  platform: '4',
+  departure: up.trips[0].scheduledDeparture + 5,
+  stationStops: { [route.stations[1].id]: true },
+  stationTimes: { [route.stations[1].id]: { arrival: 333, departure: 334 } }
 };
 const overridden = api.buildTrips(route, 'up').trips[0];
 assert.strictEqual(overridden.destination, '特別終点');
 assert.strictEqual(overridden.kind, '快速');
 assert.strictEqual(overridden.through, true);
+assert.strictEqual(overridden.platform, '4');
+assert.strictEqual(overridden.departure, up.trips[0].scheduledDeparture + 5);
+assert.strictEqual(overridden.stopTimes[route.stations[1].id].stop, true);
+assert.strictEqual(overridden.stopTimes[route.stations[1].id].arrival, 333);
+assert.strictEqual(overridden.stopTimes[route.stations[1].id].departure, 334);
+assert.strictEqual(overridden.times[route.stations[1].id], 333);
 delete route.overrides.up[up.trips[0].id];
 
 const branch = {
@@ -180,6 +193,11 @@ importCandidate.lines[0].through.up = {
   every: 4, layover: 3, targetServiceId: partner.services[0].id,
   destination: ''
 };
+importCandidate.lines[0].overrides.up.SR001A = {
+  platform: '7番線', departure: 370,
+  stationStops: { [route.stations[1].id]: false, invalid: 'no' },
+  stationTimes: { [route.stations[2].id]: { arrival: 380, departure: 381 }, invalid: { arrival: 'bad' } }
+};
 importCandidate.lines[0].branches = [{
   id: 'imported-branch', enabled: true, name: '輸入支線',
   junctionStationId: route.stations[2].id, targetLineId: partner.id,
@@ -196,6 +214,11 @@ assert.strictEqual(imported.lines[0].through.up.directionLabel, '潮見方面');
 assert.strictEqual(imported.lines[0].through.up.serviceName, '普通');
 assert.strictEqual(imported.lines[0].through.up.destination, '潮見');
 assert.strictEqual('targetLineId' in imported.lines[0].through.up, false);
+assert.strictEqual(imported.lines[0].overrides.up.SR001A.platform, '7番線');
+assert.strictEqual(imported.lines[0].overrides.up.SR001A.departure, 370);
+assert.strictEqual(imported.lines[0].overrides.up.SR001A.stationStops[route.stations[1].id], false);
+assert.strictEqual('invalid' in imported.lines[0].overrides.up.SR001A.stationStops, false);
+assert.strictEqual(imported.lines[0].overrides.up.SR001A.stationTimes[route.stations[2].id].departure, 381);
 
 const soloRoute = JSON.parse(JSON.stringify(route));
 soloRoute.through.up = {
@@ -214,6 +237,9 @@ const csv = api.makeCsv();
 assert(csv.startsWith('"基準路線","方向","列車番号"'));
 assert(csv.includes('"支線"'));
 assert(csv.includes('"直通路線"'));
+assert(csv.includes('"発車番線"'));
+assert(csv.includes('"到着時刻"'));
+assert(csv.includes('"発車時刻"'));
 assert(csv.includes('"海浜線"'));
 assert(csv.includes('"潮見"'));
 assert.strictEqual(csv.split('\r\n').length, 1201);
@@ -232,4 +258,11 @@ assert(element('generatorEditor').innerHTML.includes('列車種別'));
 api.renderTimetable();
 assert(element('timetable').innerHTML.includes('data-edit-train'));
 assert(element('timetable').innerHTML.includes('↗ 海浜線・潮見ゆき'));
-console.log('Application logic, custom service, branch, destination, and manual through-service tests passed.');
+assert(element('timetable').innerHTML.includes('番線'));
+api.openTrainEditor(up.trips[0].id);
+assert(element('modalContent').innerHTML.includes('停車駅情報'));
+assert(element('modalContent').innerHTML.includes('id="editTrainDeparture"'));
+assert(element('modalContent').innerHTML.includes('id="editTrainPlatform"'));
+assert(element('modalContent').innerHTML.includes('data-train-stop-key'));
+assert(element('modalContent').innerHTML.includes('data-train-time-field="arrival"'));
+console.log('Application logic, editable stop times, platform, service, destination, branch, and through-service tests passed.');

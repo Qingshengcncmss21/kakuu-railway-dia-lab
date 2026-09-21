@@ -110,7 +110,7 @@ def make_binary_manifest() -> bytes:
         "manifest",
         "package",
         PACKAGE_NAME,
-        "1.3.0",
+        "1.4.0",
         "uses-sdk",
         "application",
         APP_LABEL,
@@ -163,8 +163,8 @@ def make_binary_manifest() -> bytes:
             "manifest",
             [
                 string_attr(NO_INDEX, "package", PACKAGE_NAME),
-                int_attr(android_uri, "versionCode", 5),
-                string_attr(android_uri, "versionName", "1.3.0"),
+                int_attr(android_uri, "versionCode", 6),
+                string_attr(android_uri, "versionName", "1.4.0"),
             ],
         )
     )
