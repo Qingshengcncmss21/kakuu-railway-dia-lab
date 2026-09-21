@@ -1,0 +1,13 @@
+# Generated Android packages and build output
+/build/
+/dist/
+
+# Signing credentials (never commit these)
+*.jks
+*.keystore
+*-key.pem
+
+# Local caches
+__pycache__/
+*.py[cod]
+.DS_Store
