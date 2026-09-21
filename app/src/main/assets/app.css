@@ -198,7 +198,7 @@ button { border: 0; cursor: pointer; }
 .generation-hero::after { content: ""; position: absolute; width: 170px; height: 170px; border: 34px solid rgba(255,255,255,.055); border-radius: 50%; top: -90px; right: -65px; }
 .generation-hero h2 { margin: 4px 0 0; font-size: 20px; }
 .generation-hero p { color: #abb3c4; font-size: 11px; line-height: 1.6; margin: 8px 0 0; max-width: 270px; }
-.stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 14px 0; }
+.stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin: 14px 0; }
 .stat { background: #f7f8fb; border: 1px solid var(--line); border-radius: 14px; padding: 12px 9px; text-align: center; }
 .stat b { display: block; font-size: 19px; }
 .stat span { display: block; color: var(--muted); font-size: 9px; margin-top: 3px; }
@@ -221,6 +221,21 @@ button { border: 0; cursor: pointer; }
 .inline-check input { accent-color: var(--service-color); }
 .remove-mini { min-height: 28px; padding: 0 8px; color: var(--danger); background: #fff1f3; border-radius: 8px; font-size: 9px; font-weight: 750; }
 .base-tag { padding: 4px 8px; color: var(--accent); background: var(--accent-soft); border-radius: 7px; font-size: 8px; font-weight: 800; }
+
+.branch-editor-card .card-title { align-items: center; }
+.branch-editor-card .card-title > div span { display: block; margin-top: 3px; }
+.branch-list { display: grid; gap: 10px; }
+.branch-empty { margin: 0; padding: 17px; border: 1px dashed #ccd2df; border-radius: 15px; color: var(--muted); background: #fafbfc; font-size: 10px; line-height: 1.6; text-align: center; }
+.branch-card { border: 1px solid var(--line); border-radius: 16px; background: #fafbfc; padding: 13px; opacity: .78; }
+.branch-card.enabled { opacity: 1; border-color: #bcd8d4; background: #fbfffe; }
+.branch-title { min-height: 31px; display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 11px; }
+.branch-title b { display: block; font-size: 12px; }
+.branch-title span { display: block; margin-top: 2px; color: var(--muted); font-size: 9px; }
+.branch-actions { display: flex; align-items: center; gap: 8px; }
+.branch-fields { gap: 9px; }
+.branch-fields .field input, .branch-fields .field select { height: 40px; font-size: 11px; }
+.branch-fields input:disabled, .branch-fields select:disabled { opacity: .5; }
+.secondary:disabled { cursor: not-allowed; opacity: .45; }
 
 .through-grid { display: grid; gap: 10px; }
 .through-card { border: 1px solid var(--line); border-radius: 16px; background: #fafbfc; padding: 13px; opacity: .78; }
@@ -318,6 +333,7 @@ button { border: 0; cursor: pointer; }
   .station-item { margin: 0; }
   .station-track::after { display: none; }
   .through-grid { grid-template-columns: 1fr 1fr; }
+  .stats-grid { grid-template-columns: repeat(4, 1fr); }
   .modal { max-width: 580px; margin: 0 auto; border-radius: 26px 26px 0 0; }
 }
 
