@@ -73,7 +73,7 @@ vm.runInNewContext(source, context, { filename: 'app.js' });
 
 const api = context.__diaTest;
 const state = api.getState();
-assert.strictEqual(state.version, 5);
+assert.strictEqual(state.version, 6);
 assert.strictEqual(state.lines.length, 2);
 const route = state.lines[0];
 const partner = state.lines[1];
@@ -125,6 +125,27 @@ assert.strictEqual(overridden.stopTimes[route.stations[1].id].departure, 334);
 assert.strictEqual(overridden.times[route.stations[1].id], 333);
 delete route.overrides.up[up.trips[0].id];
 
+route.overrides.up[up.trips[1].id] = { terminalStationKey: route.stations[4].id };
+const shortTurn = api.buildTrips(route, 'up').trips[1];
+assert.strictEqual(shortTurn.customTerminal, true);
+assert.strictEqual(shortTurn.destination, route.stations[4].name);
+assert.strictEqual(shortTurn.terminalStationKey, route.stations[4].id);
+assert.strictEqual(shortTurn.terminalStationName, route.stations[4].name);
+assert.strictEqual(shortTurn.stationSequence.length, 5);
+assert.strictEqual(shortTurn.fullStationSequence.length, 8);
+assert.strictEqual(shortTurn.stopTimes[route.stations[4].id].terminal, true);
+assert.strictEqual(shortTurn.stopTimes[route.stations[4].id].departure, shortTurn.stopTimes[route.stations[4].id].arrival);
+assert.strictEqual(typeof shortTurn.times[route.stations[5].id], 'undefined');
+delete route.overrides.up[up.trips[1].id];
+
+route.overrides.up[up.trips[3].id] = { terminalStationKey: route.stations[3].id };
+const shortThrough = api.buildTrips(route, 'up').trips[3];
+assert.strictEqual(shortThrough.customTerminal, true);
+assert.strictEqual(shortThrough.through, false);
+assert.strictEqual(shortThrough.throughLineName, '');
+assert.strictEqual(shortThrough.destination, route.stations[3].name);
+delete route.overrides.up[up.trips[3].id];
+
 const branch = {
   id: 'branch-test', enabled: true, name: '空港支線',
   junctionStationId: route.stations[3].id,
@@ -142,6 +163,15 @@ assert.strictEqual(outboundBranchTrip.destination, '空港中央');
 assert.strictEqual(outboundBranchTrip.through, false);
 assert.strictEqual(typeof outboundBranchTrip.times[route.stations[4].id], 'undefined');
 assert.strictEqual(typeof outboundBranchTrip.times[api.stationTimeKey(branchUpContext.sequence[4])], 'number');
+
+const branchTerminalKey = api.stationTimeKey(branchUpContext.sequence[2]);
+route.overrides.up[outboundBranchTrip.id] = { branchId: branch.id, terminalStationKey: branchTerminalKey };
+const shortBranchTrip = api.buildTrips(route, 'up').trips[4];
+assert.strictEqual(shortBranchTrip.customTerminal, true);
+assert.strictEqual(shortBranchTrip.terminalStationKey, branchTerminalKey);
+assert.strictEqual(shortBranchTrip.destination, branchUpContext.sequence[2].name);
+assert.strictEqual(typeof shortBranchTrip.times[api.stationTimeKey(branchUpContext.sequence[3])], 'undefined');
+delete route.overrides.up[outboundBranchTrip.id];
 
 const branchDown = api.buildTrips(route, 'down');
 const branchDownContext = api.branchContexts(route, 'down')[0];
@@ -194,7 +224,7 @@ importCandidate.lines[0].through.up = {
   destination: ''
 };
 importCandidate.lines[0].overrides.up.SR001A = {
-  platform: '7番線', departure: 370,
+  platform: '7番線', departure: 370, terminalStationKey: route.stations[4].id,
   stationStops: { [route.stations[1].id]: false, invalid: 'no' },
   stationTimes: { [route.stations[2].id]: { arrival: 380, departure: 381 }, invalid: { arrival: 'bad' } }
 };
@@ -216,6 +246,7 @@ assert.strictEqual(imported.lines[0].through.up.destination, '潮見');
 assert.strictEqual('targetLineId' in imported.lines[0].through.up, false);
 assert.strictEqual(imported.lines[0].overrides.up.SR001A.platform, '7番線');
 assert.strictEqual(imported.lines[0].overrides.up.SR001A.departure, 370);
+assert.strictEqual(imported.lines[0].overrides.up.SR001A.terminalStationKey, route.stations[4].id);
 assert.strictEqual(imported.lines[0].overrides.up.SR001A.stationStops[route.stations[1].id], false);
 assert.strictEqual('invalid' in imported.lines[0].overrides.up.SR001A.stationStops, false);
 assert.strictEqual(imported.lines[0].overrides.up.SR001A.stationTimes[route.stations[2].id].departure, 381);
@@ -238,6 +269,8 @@ assert(csv.startsWith('"基準路線","方向","列車番号"'));
 assert(csv.includes('"支線"'));
 assert(csv.includes('"直通路線"'));
 assert(csv.includes('"発車番線"'));
+assert(csv.includes('"運転終点"'));
+assert(csv.includes('"中間駅終着"'));
 assert(csv.includes('"到着時刻"'));
 assert(csv.includes('"発車時刻"'));
 assert(csv.includes('"海浜線"'));
@@ -263,6 +296,14 @@ api.openTrainEditor(up.trips[0].id);
 assert(element('modalContent').innerHTML.includes('停車駅情報'));
 assert(element('modalContent').innerHTML.includes('id="editTrainDeparture"'));
 assert(element('modalContent').innerHTML.includes('id="editTrainPlatform"'));
+assert(element('modalContent').innerHTML.includes('id="editTrainTerminal"'));
+assert(element('modalContent').innerHTML.includes('中間駅を選ぶと'));
 assert(element('modalContent').innerHTML.includes('data-train-stop-key'));
 assert(element('modalContent').innerHTML.includes('data-train-time-field="arrival"'));
-console.log('Application logic, editable stop times, platform, service, destination, branch, and through-service tests passed.');
+route.overrides.up[up.trips[0].id] = { terminalStationKey: route.stations[3].id };
+api.renderTimetable();
+assert(element('timetable').innerHTML.includes(`止 ${route.stations[3].name}ゆき`));
+api.openTrainEditor(up.trips[0].id);
+assert(element('modalContent').innerHTML.includes('<span class="terminal-badge">終点</span>'));
+delete route.overrides.up[up.trips[0].id];
+console.log('Application logic, editable intermediate terminus, stop times, platform, service, destination, branch, and through-service tests passed.');

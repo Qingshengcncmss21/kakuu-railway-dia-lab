@@ -297,6 +297,7 @@ button { border: 0; cursor: pointer; }
 .train-detail-service b { display: block; font-size: 19px; }
 .train-detail-service small { display: block; margin-top: 4px; color: rgba(255,255,255,.72); font-size: 9px; }
 .train-detail-fields { margin-bottom: 19px; }
+.terminal-field > small { display: block; margin: 6px 3px 0; color: var(--muted); font-size: 8px; line-height: 1.5; }
 .train-stop-editor { overflow: hidden; padding: 14px 12px 4px; border: 1px solid var(--line); border-radius: 18px; background: #f4f5f8; }
 .train-stop-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin: 0 3px 15px; }
 .train-stop-title b { display: block; font-size: 14px; }
@@ -316,6 +317,8 @@ button { border: 0; cursor: pointer; }
 .stop-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .stop-detail-head small { display: block; color: var(--muted); font-size: 8px; }
 .stop-detail-head b { display: block; margin-top: 2px; font-size: 14px; }
+.stop-mode-tools { display: flex; align-items: center; gap: 5px; }
+.terminal-badge { flex: 0 0 auto; padding: 5px 6px; border-radius: 7px; background: var(--ink); color: white; font-size: 8px; font-weight: 850; }
 .stop-mode-select { width: 68px; height: 32px; padding: 0 6px; border: 1px solid var(--line); border-radius: 9px; background: #fafbfc; color: var(--ink); font-size: 9px; font-weight: 800; }
 .stop-time-edit { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 10px; padding-top: 9px; border-top: 1px solid #edf0f4; }
 .stop-time-edit label > span, .origin-time-note > span { display: block; margin: 0 0 4px; color: var(--muted); font-size: 7px; font-weight: 700; }
@@ -323,6 +326,7 @@ button { border: 0; cursor: pointer; }
 .stop-time-edit input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); background: white; }
 .origin-time-note { min-height: 35px; padding: 5px 7px; border-radius: 9px; background: #f6f7fa; }
 .origin-time-note b { color: var(--muted); font-size: 8px; }
+.terminal-note { background: #eef1f6; }
 .stop-detail-card > p { margin: 5px 0 0; color: var(--faint); font-size: 7px; }
 .train-stop-row.passing { opacity: .66; }
 .train-stop-row.passing .stop-detail-card { border: 1px dashed #ccd2dc; box-shadow: none; }
