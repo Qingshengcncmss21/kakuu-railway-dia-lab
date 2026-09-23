@@ -21,6 +21,7 @@
 - 路線設定の JSON 書き出し・読み込み
 - 生成時刻表の CSV 書き出し
 - 端末内のローカルストレージへ自動保存
+- DIA LAB 専用アプリアイコン（ホーム画面・インストール画面）
 
 ## 支線の設定
 
@@ -56,5 +57,7 @@ python3 tools/build_apk.py
 ## 構成
 
 - `app/src/main/assets/` — WebView で動くアプリ本体
+- `app/src/main/icon.svg` — DIA LAB アプリアイコンの編集用原稿
+- `app/src/main/res/` — Android ランチャー用の各解像度アイコン
 - `app/src/main/AndroidManifest.xml` — 可読用マニフェスト
 - `tools/build_apk.py` — バイナリ Manifest、DEX、署名済み APK の生成

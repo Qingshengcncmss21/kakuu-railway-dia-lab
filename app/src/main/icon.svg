@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">DIA LAB app icon</title>
+  <desc id="desc">A navy rounded square with two white railway lines and a lavender signal light.</desc>
+  <defs>
+    <linearGradient id="surface" x1="86" y1="56" x2="430" y2="464" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#202b45"/>
+      <stop offset="1" stop-color="#11182a"/>
+    </linearGradient>
+    <linearGradient id="light" x1="330" y1="172" x2="386" y2="228" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#b7c1ff"/>
+      <stop offset="1" stop-color="#7188ff"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="448" height="448" rx="132" fill="url(#surface)"/>
+  <path d="M142 202h228" fill="none" stroke="#ffffff" stroke-width="38" stroke-linecap="round"/>
+  <path d="M142 310h228" fill="none" stroke="#ffffff" stroke-width="38" stroke-linecap="round"/>
+  <circle cx="358" cy="202" r="25" fill="url(#light)" stroke="#202b45" stroke-width="10"/>
+</svg>

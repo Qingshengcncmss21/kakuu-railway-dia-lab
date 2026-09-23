@@ -23,12 +23,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "app" / "src" / "main" / "assets"
+RESOURCES = ROOT / "app" / "src" / "main" / "res"
 BUILD = ROOT / "build"
 DIST = ROOT / "dist"
 APK_PATH = DIST / "KakuuRailwayDiaLab.apk"
 PACKAGE_NAME = "jp.dialab.kakuu"
 ACTIVITY_NAME = "jp.dialab.kakuu.MainActivity"
 APP_LABEL = "架空鉄道ダイヤ工房"
+APP_ICON_RESOURCE_ID = 0x7F010000
+ICON_DENSITIES = (
+    ("mdpi", 160, 48),
+    ("hdpi", 240, 72),
+    ("xhdpi", 320, 96),
+    ("xxhdpi", 480, 144),
+    ("xxxhdpi", 640, 192),
+)
 NO_INDEX = 0xFFFFFFFF
 APK_SIGNATURE_SCHEME_V2_ID = 0x7109871A
 APK_SIGNATURE_ALGORITHM_RSA_PKCS1_SHA256 = 0x0103
@@ -91,12 +100,14 @@ def make_string_pool(strings: list[str]) -> bytes:
 def make_binary_manifest() -> bytes:
     resource_names = [
         ("label", 0x01010001),
+        ("icon", 0x01010002),
         ("name", 0x01010003),
         ("exported", 0x01010010),
         ("minSdkVersion", 0x0101020C),
         ("versionCode", 0x0101021B),
         ("versionName", 0x0101021C),
         ("targetSdkVersion", 0x01010270),
+        ("roundIcon", 0x0101052C),
     ]
     values = [name for name, _ in resource_names]
 
@@ -110,7 +121,7 @@ def make_binary_manifest() -> bytes:
         "manifest",
         "package",
         PACKAGE_NAME,
-        "1.5.0",
+        "1.6.0",
         "uses-sdk",
         "application",
         APP_LABEL,
@@ -145,6 +156,9 @@ def make_binary_manifest() -> bytes:
     def bool_attr(namespace_index: int, name: str, value: bool) -> bytes:
         return attr(namespace_index, name, NO_INDEX, 0x12, NO_INDEX if value else 0)
 
+    def reference_attr(namespace_index: int, name: str, resource_id: int) -> bytes:
+        return attr(namespace_index, name, NO_INDEX, 0x01, resource_id)
+
     def start_element(name: str, attributes: list[bytes]) -> bytes:
         size = 36 + 20 * len(attributes)
         extension = struct.pack("<IIHHHHHH", NO_INDEX, index[name], 20, 20, len(attributes), 0, 0, 0)
@@ -163,14 +177,23 @@ def make_binary_manifest() -> bytes:
             "manifest",
             [
                 string_attr(NO_INDEX, "package", PACKAGE_NAME),
-                int_attr(android_uri, "versionCode", 7),
-                string_attr(android_uri, "versionName", "1.5.0"),
+                int_attr(android_uri, "versionCode", 8),
+                string_attr(android_uri, "versionName", "1.6.0"),
             ],
         )
     )
     chunks.append(start_element("uses-sdk", [int_attr(android_uri, "minSdkVersion", 23), int_attr(android_uri, "targetSdkVersion", 35)]))
     chunks.append(end_element("uses-sdk"))
-    chunks.append(start_element("application", [string_attr(android_uri, "label", APP_LABEL)]))
+    chunks.append(
+        start_element(
+            "application",
+            [
+                string_attr(android_uri, "label", APP_LABEL),
+                reference_attr(android_uri, "icon", APP_ICON_RESOURCE_ID),
+                reference_attr(android_uri, "roundIcon", APP_ICON_RESOURCE_ID),
+            ],
+        )
+    )
     chunks.append(start_element("activity", [string_attr(android_uri, "name", ACTIVITY_NAME), bool_attr(android_uri, "exported", True)]))
     chunks.append(start_element("intent-filter", []))
     chunks.append(start_element("action", [string_attr(android_uri, "name", "android.intent.action.MAIN")]))
@@ -184,6 +207,57 @@ def make_binary_manifest() -> bytes:
     chunks.append(namespace(0x0101))
     body = b"".join(chunks)
     return struct.pack("<HHI", 0x0003, 8, len(body) + 8) + body
+
+
+def make_resource_table(icon_paths: list[str]) -> bytes:
+    """Build the minimal Android resource table used by the launcher icon."""
+    if len(icon_paths) != len(ICON_DENSITIES):
+        raise ValueError("Every launcher icon density must have a resource path")
+
+    global_strings = make_string_pool(icon_paths)
+    type_strings = make_string_pool(["mipmap"])
+    key_strings = make_string_pool(["ic_launcher"])
+
+    type_spec = (
+        struct.pack("<HHI", 0x0202, 16, 20)
+        + struct.pack("<BBHI", 1, 0, 0, 1)
+        + struct.pack("<I", 0x40000000)
+    )
+
+    type_chunks: list[bytes] = []
+    for string_index, (_, density, _) in enumerate(ICON_DENSITIES):
+        config = bytearray(64)
+        struct.pack_into("<I", config, 0, len(config))
+        struct.pack_into("<H", config, 14, density)
+        header_size = 20 + len(config)
+        entries_start = header_size + 4
+        entry = struct.pack("<HHI", 8, 0, 0)
+        value = struct.pack("<HBBI", 8, 0, 0x03, string_index)
+        chunk_size = entries_start + len(entry) + len(value)
+        type_chunks.append(
+            struct.pack("<HHI", 0x0201, header_size, chunk_size)
+            + struct.pack("<BBHII", 1, 0, 0, 1, entries_start)
+            + bytes(config)
+            + struct.pack("<I", 0)
+            + entry
+            + value
+        )
+
+    package_header_size = 288
+    type_strings_offset = package_header_size
+    key_strings_offset = type_strings_offset + len(type_strings)
+    package_body = type_strings + key_strings + type_spec + b"".join(type_chunks)
+    package_size = package_header_size + len(package_body)
+    package_name = PACKAGE_NAME.encode("utf-16-le")
+    package_name_field = package_name + bytes(256 - len(package_name))
+    package = (
+        struct.pack("<HHII", 0x0200, package_header_size, package_size, 0x7F)
+        + package_name_field
+        + struct.pack("<IIIII", type_strings_offset, 1, key_strings_offset, 1, 0)
+        + package_body
+    )
+    table_size = 12 + len(global_strings) + len(package)
+    return struct.pack("<HHII", 0x0002, 12, table_size, 1) + global_strings + package
 
 
 def make_dex() -> bytes:
@@ -448,11 +522,30 @@ def ensure_signing_material() -> tuple[Path, Path]:
     return key, certificate
 
 
-def zip_write(archive: zipfile.ZipFile, name: str, data: bytes) -> None:
+def zip_write(
+    archive: zipfile.ZipFile,
+    name: str,
+    data: bytes,
+    *,
+    compress_type: int = zipfile.ZIP_DEFLATED,
+    align_to: int | None = None,
+) -> None:
     info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
-    info.compress_type = zipfile.ZIP_DEFLATED
+    info.compress_type = compress_type
     info.external_attr = 0o644 << 16
-    archive.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+    if align_to:
+        if not archive.fp:
+            raise RuntimeError("APK archive is not open")
+        data_offset_without_extra = archive.fp.tell() + 30 + len(name.encode("utf-8"))
+        padding = (-data_offset_without_extra) % align_to
+        if padding:
+            # A ZIP extra field needs a four-byte header. Its header is itself
+            # 4-byte aligned, so the payload length supplies the needed padding.
+            info.extra = struct.pack("<HH", 0xD935, padding) + bytes(padding)
+    if compress_type == zipfile.ZIP_DEFLATED:
+        archive.writestr(info, data, compress_type=compress_type, compresslevel=9)
+    else:
+        archive.writestr(info, data, compress_type=compress_type)
 
 
 def length_prefixed(value: bytes) -> bytes:
@@ -664,10 +757,18 @@ def build_apk() -> Path:
         if not (ASSETS / filename).is_file():
             raise FileNotFoundError(f"Missing asset: {filename}")
 
+    icon_paths = [f"res/mipmap-{density}-v4/ic_launcher.png" for density, _, _ in ICON_DENSITIES]
+    for icon_path in icon_paths:
+        if not (ROOT / "app" / "src" / "main" / icon_path).is_file():
+            raise FileNotFoundError(f"Missing launcher icon: {icon_path}")
+
     payload: dict[str, bytes] = {
         "AndroidManifest.xml": make_binary_manifest(),
         "classes.dex": make_dex(),
+        "resources.arsc": make_resource_table(icon_paths),
     }
+    for icon_path in icon_paths:
+        payload[icon_path] = (ROOT / "app" / "src" / "main" / icon_path).read_bytes()
     for filename in required_assets:
         payload[f"assets/{filename}"] = (ASSETS / filename).read_bytes()
 
@@ -700,7 +801,10 @@ def build_apk() -> Path:
         )
         with zipfile.ZipFile(APK_PATH, "w") as archive:
             for name, data in payload.items():
-                zip_write(archive, name, data)
+                if name == "resources.arsc":
+                    zip_write(archive, name, data, compress_type=zipfile.ZIP_STORED, align_to=4)
+                else:
+                    zip_write(archive, name, data)
             zip_write(archive, "META-INF/MANIFEST.MF", jar_manifest)
             zip_write(archive, "META-INF/CERT.SF", signature_file)
             zip_write(archive, "META-INF/CERT.RSA", rsa_path.read_bytes())
@@ -713,6 +817,7 @@ def validate_outputs(apk: Path) -> None:
     with zipfile.ZipFile(apk) as archive:
         expected = {
             "AndroidManifest.xml", "classes.dex", "assets/index.html", "assets/app.css", "assets/app.js",
+            "resources.arsc", *{f"res/mipmap-{density}-v4/ic_launcher.png" for density, _, _ in ICON_DENSITIES},
             "META-INF/MANIFEST.MF", "META-INF/CERT.SF", "META-INF/CERT.RSA",
         }
         names = set(archive.namelist())
@@ -732,6 +837,27 @@ def validate_outputs(apk: Path) -> None:
         axml = archive.read("AndroidManifest.xml")
         if struct.unpack_from("<H", axml, 0)[0] != 0x0003 or struct.unpack_from("<I", axml, 4)[0] != len(axml):
             raise RuntimeError("Invalid binary AndroidManifest.xml")
+        arsc = archive.read("resources.arsc")
+        if struct.unpack_from("<H", arsc, 0)[0] != 0x0002 or struct.unpack_from("<I", arsc, 4)[0] != len(arsc):
+            raise RuntimeError("Invalid Android resource table")
+        arsc_info = archive.getinfo("resources.arsc")
+        if arsc_info.compress_type != zipfile.ZIP_STORED:
+            raise RuntimeError("Android resource table must be stored without compression")
+        arsc_data_offset = arsc_info.header_offset + 30 + len(arsc_info.filename.encode("utf-8")) + len(arsc_info.extra)
+        if arsc_data_offset % 4:
+            raise RuntimeError("Android resource table must be aligned to four bytes")
+        for density, _, expected_size in ICON_DENSITIES:
+            icon_path = f"res/mipmap-{density}-v4/ic_launcher.png"
+            icon = archive.read(icon_path)
+            if icon[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR":
+                raise RuntimeError(f"Invalid PNG launcher icon: {icon_path}")
+            width, height = struct.unpack_from(">II", icon, 16)
+            if (width, height) != (expected_size, expected_size):
+                raise RuntimeError(f"Unexpected launcher icon size: {icon_path}")
+            if icon_path.encode("utf-8") not in arsc:
+                raise RuntimeError(f"Launcher icon is missing from the resource table: {icon_path}")
+        if struct.pack("<I", APP_ICON_RESOURCE_ID) not in axml:
+            raise RuntimeError("Launcher icon reference is missing from AndroidManifest.xml")
         if b"X-Android-APK-Signed: 2\r\n" not in archive.read("META-INF/CERT.SF"):
             raise RuntimeError("V1 rollback protection attribute is missing")
 
